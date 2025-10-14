@@ -1,9 +1,12 @@
 [project]
 name = "note-verse-ai"
 version = "0.1.0"
-description = "Add your description here"
+description = "NoteVerse AI"
 requires-python = ">=3.9"
 dependencies = [
     "fastapi>=0.119.0",
+    "langchain>=0.4.0.dev0",
+    "langchain-openai>=0.4.0.dev0",
+    "pydantic-settings>=2.11.0",
     "uvicorn>=0.37.0",
 ]
