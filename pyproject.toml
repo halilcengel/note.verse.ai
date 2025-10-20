@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "NoteVerse AI"
 requires-python = ">=3.9"
 dependencies = [
+    "beautifulsoup4>=4.14.2",
     "fastapi>=0.119.0",
     "langchain>=0.4.0.dev0",
+    "langchain-community>=0.3.31",
     "langchain-openai>=0.4.0.dev0",
     "pydantic-settings>=2.11.0",
     "uvicorn>=0.37.0",
