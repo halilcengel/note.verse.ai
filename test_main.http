@@ -9,3 +9,29 @@ GET http://127.0.0.1:8000/hello/User
 Accept: application/json
 
 ###
+
+# Test the new embed endpoint
+# Note: Replace the file path with an actual PDF file path
+POST http://127.0.0.1:8000/embed
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="collection_name"
+
+my_documents
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="date"
+
+2025-11-16
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="createdBy"
+
+admin
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="sample.pdf"
+Content-Type: application/pdf
+
+< /path/to/your/sample.pdf
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###

@@ -1,13 +1,18 @@
 import logging
+import os
+import tempfile
+from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from langchain_core.messages import ToolMessage
+from langchain_qdrant import QdrantVectorStore
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams
 
 from apps.school_web_site_agent.orchestrator import orchestrator
-
-app = FastAPI()
-
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -130,3 +135,106 @@ async def query_agent(request: QueryRequest):
 @app.get("/hello/{name}")
 async def say_hello(name: str):
     return {"message": f"Hello {name}"}
+
+
+@app.post("/embed")
+async def embed_document(
+    collection_name: str = Form(...),
+    file: UploadFile = File(...),
+    date: str = Form(...),
+    createdBy: str = Form(...)
+):
+    """
+    Endpoint to upload a file, create embeddings, and store in Qdrant vector store.
+
+    Parameters:
+    - collection_name: Name of the collection to store embeddings
+    - file: PDF file to process
+    - date: Date associated with the document
+    - createdBy: User who created/uploaded the document
+
+    Returns:
+    - Success message with document count
+    """
+    temp_path = None
+
+    try:
+        # Validate file type
+        if not file.filename.endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+        # Initialize Qdrant client
+        qdrant_url = "http://localhost:6333"
+        qdrant_client = QdrantClient(url=qdrant_url)
+
+        # Initialize embeddings
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+
+        # Check if collection exists
+        collections = qdrant_client.get_collections().collections
+        collection_exists = any(col.name == collection_name for col in collections)
+
+        if not collection_exists:
+            # Create new collection with the same configuration as the existing one
+            # OpenAI text-embedding-3-large has 3072 dimensions
+            qdrant_client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=3072, distance=Distance.COSINE)
+            )
+            logging.info(f"Created new collection: {collection_name}")
+        else:
+            logging.info(f"Using existing collection: {collection_name}")
+
+        # Save uploaded file to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            temp_path = tmp_file.name
+            content = await file.read()
+            tmp_file.write(content)
+
+        # Load and process PDF
+        loader = PyPDFLoader(temp_path)
+        documents = loader.load()
+
+        # Split documents into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+        )
+        splits = text_splitter.split_documents(documents)
+
+        # Add metadata to each document
+        for doc in splits:
+            doc.metadata['uploaded_date'] = date
+            doc.metadata['created_by'] = createdBy
+            doc.metadata['original_filename'] = file.filename
+            doc.metadata['upload_timestamp'] = datetime.now().isoformat()
+
+        # Connect to vector store and add documents
+        vector_store = QdrantVectorStore.from_existing_collection(
+            embedding=embeddings,
+            collection_name=collection_name,
+            url=qdrant_url,
+        )
+
+        vector_store.add_documents(splits)
+
+        return {
+            "status": "success",
+            "message": f"Successfully processed and embedded {len(splits)} document chunks",
+            "collection_name": collection_name,
+            "document_count": len(splits),
+            "filename": file.filename,
+            "created_by": createdBy,
+            "date": date,
+            "collection_existed": collection_exists
+        }
+
+    except Exception as e:
+        logging.error(f"Error processing document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
+
+    finally:
+        # Clean up temporary file
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
