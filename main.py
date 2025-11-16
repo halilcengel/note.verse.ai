@@ -1,4 +1,9 @@
+import logging
+
 from fastapi import FastAPI
+from langchain_core.messages import ToolMessage
+
+from apps.school_web_site_agent.orchestrator import orchestrator
 
 app = FastAPI()
 
@@ -6,7 +11,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from apps.school_web_site_agent.scrapper_agent import agent
 from apps.school_web_site_agent.context import Context
 import json
 
@@ -39,41 +43,69 @@ async def query_agent(request: QueryRequest):
             school=request.school,
             department=request.department
         )
-
+        tool_response = False
         try:
-            for token, metadata in agent.stream(
+            for chunk in orchestrator.stream(
                     {"messages": [{"role": "user", "content": request.message}]},
-                    stream_mode="messages",
+                    stream_mode=["messages","custom"],
                     config=config,
-                    context=context
+                    context=context,
+                    subgraphs=True
             ):
-                # Determine the content type
-                content_blocks = token.content_blocks
 
-                # Check if this is a tool call
-                is_tool_call = any(
-                    block.get('type') in ['tool_call_chunk', 'tool_call']
-                    for block in content_blocks
-                )
+                namespace, stream_type, data = chunk
 
-                # Check if this is a tool result
-                is_tool_result = metadata['langgraph_node'] == 'tools'
+                print("namespace:", namespace)
+                print("data:", data)
 
-                # Determine message type
-                if is_tool_result:
-                    message_type = "tool_result"
-                elif is_tool_call:
-                    message_type = "tool_call"
-                else:
-                    message_type = "ai"
+                if isinstance(data, dict) and 'agent' in data:
+                    agent_name = data['agent']
+                    if agent_name:
+                        yield f"data: {json.dumps({'type': 'agent_decision', 'agent_name': agent_name})}\n\n"
+                        print(f"Routed to agent: {agent_name}")
+                    else:
+                        print("No agent routing information found")
 
-                event_data = {
-                    "node": metadata['langgraph_node'],
-                    "type": message_type,
-                    "content": content_blocks
-                }
+                if isinstance(data, tuple) and len(data) == 2:
+                    message, metadata = data
 
-                yield f"data: {json.dumps(event_data)}\n\n"
+                    if hasattr(message, 'tool_calls') and message.tool_calls:
+                        for tool_call in message.tool_calls:
+                            if tool_call.get('name') and tool_call.get('id'):
+                                current_tool_name = tool_call['name']
+                                tool_args = tool_call.get('args', {})
+
+                                yield f"data: {json.dumps({
+                                    "type": "tool_start",
+                                    "data": {
+                                        "name": current_tool_name,
+                                        "args": tool_args,
+                                        "id": tool_call['id']
+                                    }
+                                })}\n\n"
+                                print(f"Tool started: {current_tool_name}")
+                                tool_response = True
+
+                    if hasattr(message, '__class__') and message.__class__.__name__ == 'ToolMessage':
+                        tool_name = getattr(message, 'name', current_tool_name)
+                        tool_content = getattr(message, 'content', '')
+                        try:
+                            tool_result = json.loads(tool_content)
+                        except:
+                            tool_result = tool_content
+
+                        yield f"data: {json.dumps({
+                            "type": "tool_response",
+                            "data": {
+                                "name": tool_name,
+                                "result": tool_result
+                            }
+                        })}\n\n"
+                        print(f"Tool response from: {tool_name}")
+                        tool_response = False
+
+                    if message.__class__.__name__ == "AIMessageChunk" and metadata.get("langgraph_node") != "router" and tool_response is False:
+                        yield f"data: {json.dumps({'type': 'message', 'content': message.content})}\n\n"
 
         except Exception as e:
             error_data = {
@@ -94,7 +126,6 @@ async def query_agent(request: QueryRequest):
             "X-Accel-Buffering": "no"
         }
     )
-
 
 @app.get("/hello/{name}")
 async def say_hello(name: str):
