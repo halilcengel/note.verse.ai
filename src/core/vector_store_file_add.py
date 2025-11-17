@@ -1,9 +1,13 @@
+import os
+
 import requests
 from langchain_qdrant import QdrantVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import tempfile
+
+from settings import settings
 
 
 def download_pdf(url, temp_path):
@@ -65,10 +69,13 @@ def add_pdfs_to_vectorstore(pdf_urls, collection_name="school_data",
             openai_api_key=api_key
         )
 
+    qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip()
+
     qdrant = QdrantVectorStore.from_existing_collection(
         embedding=embeddings,
         collection_name=collection_name,
         url=qdrant_url,
+        api_key=qdrant_api_key,
     )
 
     all_documents = []
@@ -134,11 +141,12 @@ if __name__ == "__main__":
         "https://oidb.bakircay.edu.tr/Yuklenenler/NOT_DONUSUM_TABLOSU.pdf"
     ]
 
-    # Process PDFs and add to vector store
+    qdrant_url = os.getenv("QDRANT_URL", "").strip()
+
     total_chunks = add_pdfs_to_vectorstore(
         pdf_urls=pdf_urls,
         collection_name="school_data",
-        qdrant_url="http://localhost:6333",
+        qdrant_url=qdrant_url,
         chunk_size=1000,
         chunk_overlap=200
     )
