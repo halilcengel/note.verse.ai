@@ -12,10 +12,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PayloadSchemaType, TextIndexParams, TokenizerType
 
 from apps.school_web_site_agent.orchestrator import orchestrator
+from apps.course_helper_agent.graph import graph as course_helper_graph
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from apps.school_web_site_agent.context import Context
+from langchain_core.messages import HumanMessage
 import json
 
 app = FastAPI()
@@ -35,6 +37,18 @@ class QueryRequest(BaseModel):
     url: str = "https://eem.bakircay.edu.tr"
     school: str = "Izmir Bakircay Universitesi"
     department: str = "Elektrik Elektronik Mühendisliği"
+
+
+class CourseQueryRequest(BaseModel):
+    message: str
+    thread_id: str
+    course_id: str
+
+
+class StudentDataRequest(BaseModel):
+    message: str
+    thread_id: str
+    student_id: str = None
 
 
 @app.post("/chat")
@@ -130,6 +144,98 @@ async def query_agent(request: QueryRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@app.post("/course-chat")
+async def query_course_helper(request: CourseQueryRequest):
+    """
+    Course Helper RAG Agent endpoint with streaming support.
+
+    Streams responses from the course helper agent including:
+    - Node transitions (retrieve, generate)
+    - Retrieved document information
+    - Generated answer chunks
+    """
+    async def event_generator():
+        config = {"configurable": {"thread_id": request.thread_id}}
+
+        state = {
+            "messages": [HumanMessage(content=request.message)],
+            "course_id": request.course_id,
+            "retrieved_documents": None,
+            "context": None,
+            "needs_retrieval": True
+        }
+
+        try:
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'course_helper'})}\n\n"
+
+            for chunk in course_helper_graph.stream(
+                state,
+                config=config,
+                stream_mode=["messages", "updates"],
+                subgraphs=True
+            ):
+                if isinstance(chunk, tuple) and len(chunk) == 3:
+                    namespace, stream_type, data = chunk
+
+                    if stream_type == "updates" and isinstance(data, dict):
+                        for node_name, node_data in data.items():
+
+                            yield f"data: {json.dumps({'type': 'node_complete', 'node': node_name})}\n\n"
+
+                            if node_name == "retrieve" and isinstance(node_data, dict):
+                                docs = node_data.get("retrieved_documents", [])
+                                if docs:
+                                    yield f"data: {json.dumps({
+                                        'type': 'documents_retrieved',
+                                        'count': len(docs),
+                                        'course_id': request.course_id,
+                                        'documents': [{
+                                            'relevance_score': doc.get('relevance_score', 0),
+                                            'source': doc.get('metadata', {}).get('source', 'Unknown')
+                                        } for doc in docs[:3]]
+                                    })}\n\n"
+                                else:
+                                    yield f"data: {json.dumps({
+                                        'type': 'documents_retrieved',
+                                        'count': 0,
+                                        'course_id': request.course_id
+                                    })}\n\n"
+
+
+                    elif stream_type == "messages" and isinstance(data, tuple) and len(data) == 2:
+                        message, metadata = data
+                        print(metadata)
+                        node_name = metadata.get("langgraph_node", "")
+
+                        if node_name == "generate" and hasattr(message, "content"):
+                            content = message.content
+
+                            if content and len(content) < 20:
+                                yield f"data: {json.dumps({'type': 'message', 'content': content})}\n\n"
+
+        except Exception as e:
+            logging.error(f"Error in course helper stream: {str(e)}")
+            error_data = {
+                "type": "error",
+                "error": str(e)
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 
 @app.get("/hello/{name}")
 async def say_hello(name: str):
